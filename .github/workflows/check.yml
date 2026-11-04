@@ -1,0 +1,20 @@
+name: Denetim
+
+# MakerOS mağazası eklentileri doğrudan bu deponun plugins/<id>/ klasörlerinden okur (main dalı).
+# Bu iş akışı yalnız denetler: plugin.json, başlangıç dosyası, pyproject.toml ve boyut sınırları.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Eklentileri denetle
+        run: python3 tools/build.py --out "$RUNNER_TEMP/dist"

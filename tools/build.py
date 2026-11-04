@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""MakerOS eklenti kataloğunu derler.
+"""MakerOS eklentilerini denetler (CI ve PR'lar için).
 
-plugins/<id>/ klasörlerinden dist/<id>-<sürüm>.zip ve dist/index.json üretir.
-Zip'ler tekrarlanabilirdir (sabit tarih, sıralı dosyalar): aynı içerik aynı
-SHA-256'yı verir. makerd index.json'u okur, zip'i indirip özetini denetler ve
-kurar.
+MakerOS mağazası eklentileri doğrudan deponun plugins/<id>/ klasörlerinden okur;
+bu betik aynı kuralları uygular ve denemek için dist/<id>-<sürüm>.zip (MakerOS'ta
+Eklentiler → İçe aktar ile kurulabilir) ve dist/index.json (özet) üretir.
 
     python3 tools/build.py [--out dist]
 """
