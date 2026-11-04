@@ -1,0 +1,39 @@
+name: Katalog
+
+# main'e her gönderimde katalog derlenir ve "catalog" sürümüne yüklenir.
+# makerd https://github.com/<depo>/releases/download/catalog/index.json adresini okur.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: catalog
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Derle
+        run: python3 tools/build.py --out dist
+      - name: Yayımla
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          gh release view catalog >/dev/null 2>&1 || gh release create catalog --title "Eklenti kataloğu" \
+            --notes "MakerOS eklenti kataloğu. Otomatik güncellenir; elle düzenlemeyin."
+          # Önce zip'ler, en son index.json: istemci hiçbir zaman olmayan bir zip'i görmez.
+          gh release upload catalog dist/*.zip --clobber
+          gh release upload catalog dist/index.json --clobber
+          keep=$(cd dist && ls)
+          for a in $(gh release view catalog --json assets -q '.assets[].name'); do
+            echo "$keep" | grep -qx "$a" || gh release delete-asset catalog "$a" -y
+          done
