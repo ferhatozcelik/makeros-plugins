@@ -1,0 +1,11 @@
+{
+  "id": "pihole",
+  "name": "Pi-hole",
+  "version": "1.1.0",
+  "description": "Ağdaki Pi-hole'un istatistikleri, en çok engellenen alan adları ve reklam engellemeyi açma/kapatma (Pi-hole v6 API).",
+  "author": "MakerOS",
+  "entrypoint": "main.py",
+  "web_port": 8791,
+  "icon": "icon.svg",
+  "args": []
+}

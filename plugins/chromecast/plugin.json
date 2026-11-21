@@ -1,0 +1,11 @@
+{
+  "id": "chromecast",
+  "name": "Chromecast",
+  "version": "1.1.0",
+  "description": "Ağdaki Chromecast ve Google Cast cihazlarını bulun; bağlantıdaki videoyu, sesi veya görseli oynatın, ses ve oynatmayı yönetin (pychromecast).",
+  "author": "MakerOS",
+  "entrypoint": "main.py",
+  "web_port": 8793,
+  "icon": "icon.svg",
+  "args": []
+}

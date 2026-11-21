@@ -1,0 +1,16 @@
+{
+  "id": "homeassistant",
+  "name": "Home Assistant",
+  "version": "1.4.0",
+  "description": "Home Assistant'ın kendi arayüzü MakerOS penceresinde ve MakerOS temasıyla; seçtiğiniz ışık, priz ve sahneler masaüstünde widget kısayolu olarak.",
+  "author": "MakerOS",
+  "entrypoint": "main.py",
+  "web_port": 8792,
+  "icon": "icon.svg",
+  "args": [],
+  "widget": {
+    "path": "/widget",
+    "w": 320,
+    "h": 200
+  }
+}
