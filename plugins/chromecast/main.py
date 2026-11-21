@@ -26,6 +26,7 @@ from urllib.parse import urlparse
 
 import pychromecast
 import zeroconf
+from pychromecast.controllers.dashcast import DashCastController
 from pychromecast.discovery import CastBrowser, SimpleCastListener
 
 try:
@@ -122,6 +123,16 @@ class Casts:
             self.conns[uuid] = c
         return c
 
+    def drop(self, uuid):
+        """Bağlantıyı kapatır (cihaz listede kalır)."""
+        with self.lock:
+            c = self.conns.pop(uuid, None)
+        if c is not None:
+            try:
+                c.disconnect(timeout=3)
+            except Exception:
+                pass
+
     def describe(self, uuid, info):
         c = self.conns.get(uuid)
         d = {
@@ -137,6 +148,7 @@ class Casts:
         if d["connected"]:
             st = c.status
             d.update(app=(st.display_name if st else "") or "", volume=round(st.volume_level, 2) if st else None, muted=bool(st and st.volume_muted))
+            d["screen"] = bool(SCREEN.get(uuid)) or (st is not None and st.app_id == "84912283")
             ms = c.media_controller.status
             if ms and ms.player_state not in (None, "UNKNOWN"):
                 d["media"] = {
@@ -170,6 +182,22 @@ def guess_type(url, given):
     return mimetypes.guess_type(path)[0] or "video/mp4"
 
 
+def lan_ip():
+    """TV'nin MakerOS'a ulaşacağı adres (varsayılan rotanın kaynak adresi)."""
+    import socket
+    s_ = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s_.connect(("1.1.1.1", 53))
+        return s_.getsockname()[0]
+    except OSError:
+        return None
+    finally:
+        s_.close()
+
+
+SCREEN = {}  # uuid → ekran paylaşımı açık mı
+
+
 def op(uuid, name, b):
     c = CASTS.connect(uuid)
     mc = c.media_controller
@@ -191,8 +219,28 @@ def op(uuid, name, b):
         mc.play()
     elif name == "stop":
         mc.stop()
-    elif name == "quit":
-        c.quit_app()
+    elif name == "screen":
+        # MakerOS masaüstünü TV'de aç (DashCast web alıcısı). Bilet makerd'den (oturum sahibi), 60 sn, tek kullanımlık.
+        t = str(b.get("ticket") or "")
+        if not re.fullmatch(r"[A-Za-z0-9_-]{16,64}", t):
+            raise ValueError(m("ekran paylaşımı bileti geçersiz", "invalid screen-share ticket"))
+        ip = lan_ip()
+        if not ip:
+            raise ValueError(m("Bu cihazın ağ adresi bulunamadı", "This device's network address was not found"))
+        port = int(os.environ.get("MAKEROS_HTTP_PORT", "80"))
+        url = f"http://{ip}{'' if port == 80 else f':{port}'}/api/v1/auth/cast?t={t}"
+        d = DashCastController()
+        c.register_handler(d)
+        d.load_url(url, force=True)
+        SCREEN[uuid] = True
+    elif name in ("quit", "disconnect"):
+        try:
+            c.quit_app()
+        finally:
+            SCREEN.pop(uuid, None)
+        if name == "disconnect":
+            CASTS.drop(uuid)
+            return {"ok": True, "device": None}
     elif name == "volume":
         lv = b.get("level")
         if not isinstance(lv, (int, float)) or not 0 <= lv <= 1:
@@ -253,17 +301,23 @@ MK.i18n({
  tr:{addManual:'Elle ekle',rescan:'Yeniden ara',hostsPh:"Cihaz IP'leri, virgülle (mDNS çalışmıyorsa) ör. 192.168.1.40",saveScan:'Kaydet ve ara',
   searching:'Ağdaki Cast cihazları aranıyor…',count:'{n} cihaz',none:'Cihaz bulunamadı. Aynı ağda mı? mDNS engelliyse "Elle ekle".',
   connect:'Bağlan',group:'grup',audio:'ses',app:'Uygulama: {a}',idle:'Boşta',pause:'Duraklat',resume:'Sürdür',stop:'Durdur',quit:'Uygulamayı kapat',
-  mute:'Sessiz',unmute:'Sesi aç',vol:'Ses',urlPh:'Oynatılacak bağlantı (mp4, mp3, jpg, m3u8…)',play:'Oynat',
+  mute:'Sessiz',unmute:'Sesi aç',vol:'Ses',share:'Ekranı paylaş',unshare:'Paylaşımı durdur',disconnect:'Bağlantıyı kes',sharing:'MakerOS ekranı bu cihazda gösteriliyor',
+  shareFail:'Ekran paylaşılamadı: {e}',
   PLAYING:'Oynatılıyor',PAUSED:'Duraklatıldı',BUFFERING:'Yükleniyor',IDLE:'Boşta'},
  en:{addManual:'Add manually',rescan:'Rescan',hostsPh:'Device IPs, comma separated (if mDNS fails) e.g. 192.168.1.40',saveScan:'Save and scan',
   searching:'Looking for Cast devices on the network…',count:'{n} devices',none:'No devices found. Same network? If mDNS is blocked, use "Add manually".',
   connect:'Connect',group:'group',audio:'audio',app:'App: {a}',idle:'Idle',pause:'Pause',resume:'Resume',stop:'Stop',quit:'Quit app',
-  mute:'Mute',unmute:'Unmute',vol:'Volume',urlPh:'Link to play (mp4, mp3, jpg, m3u8…)',play:'Play',
+  mute:'Mute',unmute:'Unmute',vol:'Volume',share:'Share screen',unshare:'Stop sharing',disconnect:'Disconnect',sharing:'The MakerOS screen is shown on this device',
+  shareFail:'Could not share the screen: {e}',
   PLAYING:'Playing',PAUSED:'Paused',BUFFERING:'Buffering',IDLE:'Idle'}});
 const $=id=>document.getElementById(id);const T=s=>{s=Math.max(0,s|0);return `${(s/60|0)}:${String(s%60).padStart(2,'0')}`};let busy=false,DEV=[],AGE=0;
 async function api(p,b){const r=await mkFetch(p,b?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)}:{cache:'no-store'});
  const d=await r.json().catch(()=>({error:'HTTP '+r.status}));if(!r.ok||d.ok===false)throw new Error(d.error||('HTTP '+r.status));return d}
 async function act(d,o,b,btn){busy=true;if(btn)btn.disabled=true;$('err').textContent='';try{await api(`api/devices/${d.uuid}/${o}`,b||{})}catch(e){$('err').textContent=d.name+': '+e.message}finally{busy=false;if(btn)btn.disabled=false;load()}}
+// Ekranı paylaş: MakerOS'tan tek kullanımlık bilet (60 sn) alınır; eklenti TV'de MakerOS'u bu biletle açar.
+async function share(d,btn){btn.disabled=true;try{const r=await fetch('/api/v1/auth/cast-ticket',{method:'POST',headers:{'X-Maker':'1'}});
+ const j=await r.json().catch(()=>({}));if(!r.ok||!j.ticket)throw new Error((j.error&&j.error.message)||('HTTP '+r.status));await act(d,'screen',{ticket:j.ticket},btn)}
+ catch(e){$('err').textContent=d.name+': '+MK.t('shareFail',{e:e.message})}finally{btn.disabled=false}}
 function el(t,cls,txt){const e=document.createElement(t);if(cls)e.className=cls;if(txt!=null)e.textContent=txt;return e}
 function card(d){const c=el('div','card'+(d.connected?' c':''));
  const top=el('div','row');top.style.justifyContent='space-between';const l=el('div');const n=el('div','n');n.append(el('span','dot'),d.name);
@@ -276,8 +330,10 @@ function card(d){const c=el('div','card'+(d.connected?' c':''));
  if(d.media)mk('stop','stop','g');if(d.app)mk('quit','quit','g');mk(d.muted?'unmute':'mute','mute','g',{muted:!d.muted});
  const v=el('input');v.type='range';v.min=0;v.max=100;v.value=Math.round((d.volume||0)*100);v.title=MK.t('vol');v.onchange=()=>act(d,'volume',{level:v.value/100});
  ctl.append(el('span','sub',MK.t('vol')),v);c.append(ctl);
- const p=el('div','row');p.style.marginTop='10px';const u=el('input','f');u.placeholder=MK.t('urlPh');const go=el('button',null,MK.t('play'));
- go.onclick=()=>{if(u.value.trim())act(d,'play',{url:u.value.trim()},go)};u.onkeydown=e=>{if(e.key==='Enter')go.click()};p.append(u,go);c.append(p);return c}
+ const p=el('div','row');p.style.marginTop='10px';
+ const sh=el('button',d.screen?'g':null,MK.t(d.screen?'unshare':'share'));sh.onclick=()=>d.screen?act(d,'quit',{},sh):share(d,sh);
+ const dc=el('button','g',MK.t('disconnect'));dc.onclick=()=>act(d,'disconnect',{},dc);p.append(sh,dc);c.append(p);
+ if(d.screen)c.append(el('div','sub',MK.t('sharing')));return c}
 function draw(){$('list').innerHTML='';for(const x of DEV)$('list').append(card(x));
  $('info').textContent=DEV.length?MK.t('count',{n:DEV.length}):(AGE<12?MK.t('searching'):MK.t('none'))}
 async function load(){if(busy||document.activeElement?.tagName==='INPUT')return;try{const d=await api('api/devices');DEV=d.devices;AGE=d.age;draw()}catch(e){$('err').textContent=e.message}}
