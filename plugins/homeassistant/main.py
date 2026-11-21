@@ -803,8 +803,8 @@ async function poll(){let st={};try{st=await api('api/status')}catch(e){st={stat
 </script>"""
 
 WIDGET = r"""<!doctype html><html lang=tr><meta charset=utf-8><meta name=viewport content='width=device-width'>""" + KIT_HEAD + r"""<style>
-html,body{background:transparent!important;overflow:hidden}
-.c{border-radius:18px;background:color-mix(in srgb,var(--card) 88%,transparent);border:1px solid var(--bd);box-shadow:0 10px 30px rgba(0,0,0,.18);padding:12px 14px;backdrop-filter:blur(20px)}
+html,body{margin:0;padding:0;background:transparent!important;overflow:hidden}
+.c{border-radius:18px;background:color-mix(in srgb,var(--card) 88%,transparent);border:1px solid var(--bd);padding:12px 14px;backdrop-filter:blur(20px)}
 .h{display:flex;align-items:center;gap:8px;cursor:pointer}.h b{flex:1;font-size:13px}.x{background:none;border:0;color:var(--mut);padding:2px 6px;font-size:16px;line-height:1}
 .g{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
 .e{border-radius:12px;background:var(--ctl);border:1px solid var(--bd);padding:9px 10px;text-align:left;color:var(--fg);cursor:pointer;min-width:0;font:inherit}

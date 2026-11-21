@@ -530,6 +530,218 @@ async def h_theme(req):
     return j({"ok": True})
 
 
+# --- Pi-hole Widget -----------------------------------------------------------------
+
+WIDGET = r"""<!doctype html><html lang=tr><meta charset=utf-8><meta name=viewport content='width=device-width'>""" + KIT_HEAD + r"""<style>
+html,body{margin:0;padding:0;background:transparent!important;overflow:hidden}
+.c{border-radius:18px;background:color-mix(in srgb,var(--card) 88%,transparent);border:1px solid var(--bd);padding:12px 14px;backdrop-filter:blur(20px);user-select:none}
+.h{display:flex;align-items:center;gap:8px;cursor:pointer}.h b{flex:1;font-size:13px;display:flex;align-items:center;gap:6px}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--mut);transition:background .3s}
+.dot.ok{background:var(--ok);box-shadow:0 0 8px var(--ok)}
+.dot.bad{background:var(--bad);box-shadow:0 0 8px var(--bad)}
+.x{background:none;border:0;color:var(--mut);padding:2px 6px;font-size:16px;line-height:1;cursor:pointer}
+.g{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
+.item{border-radius:12px;background:var(--ctl);border:1px solid var(--bd);padding:8px 10px;text-align:left;color:var(--fg);min-width:0}
+.item .lbl{font-size:11px;color:var(--mut);overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.item .val{font-size:15px;font-weight:700;margin-top:2px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:var(--fg)}
+.item .sub{font-size:10.5px;color:var(--a);font-weight:600}
+.act-bar{margin-top:10px;display:flex;align-items:center;gap:8px}
+.tgl{flex:1;padding:6px 12px;border-radius:8px;border:0;background:var(--a);color:var(--on);font-size:12px;font-weight:600;cursor:pointer;transition:opacity .15s}
+.tgl.paused{background:var(--bad)}
+.tgl:disabled{opacity:.5}
+.msg{font-size:11px;color:var(--mut);margin-top:6px;text-align:center}
+</style>
+<div class=c id=c>
+  <div class=h id=hd>
+    <svg width=18 height=18 viewBox="0 0 24 24" fill=none stroke=currentColor stroke-width=2 stroke-linecap=round stroke-linejoin=round style="color:var(--a)">
+      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+      <path d="m9 12 2 2 4-4"/>
+    </svg>
+    <b id=t>Pi-hole <span class=dot id=st-dot></span></b>
+    <button class=x id=x data-t-title=remove>×</button>
+  </div>
+  <div class=g>
+    <div class=item>
+      <div class=lbl data-t=blocked>Engellenen</div>
+      <div class=val id=v-blk>—</div>
+      <div class=sub id=v-pct>%0.0</div>
+    </div>
+    <div class=item>
+      <div class=lbl data-t=total>Toplam Sorgu</div>
+      <div class=val id=v-tot>—</div>
+    </div>
+    <div class=item>
+      <div class=lbl data-t=domains>Alan Adı</div>
+      <div class=val id=v-dom>—</div>
+    </div>
+    <div class=item>
+      <div class=lbl data-t=status>Durum</div>
+      <div class=val id=v-st>—</div>
+    </div>
+  </div>
+  <div class=act-bar>
+    <button class=tgl id=btn-tgl disabled data-t=toggle>Yükleniyor…</button>
+  </div>
+  <div class=msg id=msg></div>
+</div>
+<script>
+MK.i18n({
+  tr:{remove:'Masaüstünden kaldır',blocked:'Engellenen',total:'Toplam Sorgu',domains:'Engellenen Alan',status:'Durum',active:'Etkin',paused:'Duraklatıldı',pause:'Korumayı Duraklat',resume:'Korumayı Başlat',noConn:'Pi-hole bağlantısı bekleniyor…',loading:'Yükleniyor…'},
+  en:{remove:'Remove from desktop',blocked:'Blocked Queries',total:'Total Queries',domains:'Blocklist Domains',status:'Status',active:'Active',paused:'Paused',pause:'Pause Protection',resume:'Resume Protection',noConn:'Waiting for Pi-hole…',loading:'Loading…'}
+});
+const $=id=>document.getElementById(id);
+const post=m=>parent.postMessage(m,location.origin);
+const size=()=>post({mk:'widget-size',h:Math.ceil($('c').getBoundingClientRect().height)+2});
+new ResizeObserver(size).observe($('c'));
+$('hd').onclick=e=>{if(e.target.id!=='x')post({mk:'open',app:'makeros.plugin.pihole'})};
+$('x').onclick=()=>post({mk:'widget-close'});
+
+let currentBlocking=true;
+function fmtNum(n){return Number(n||0).toLocaleString(MK.locale||'tr-TR')}
+function render(d){
+  const ok=d&&d.ok&&d.connected;
+  $('st-dot').className='dot '+(ok?(d.blocking?'ok':'bad'):'');
+  $('v-blk').textContent=ok?fmtNum(d.queries_blocked):'—';
+  $('v-pct').textContent=ok?(`%${d.percent_blocked||0}`):'';
+  $('v-tot').textContent=ok?fmtNum(d.queries_total):'—';
+  $('v-dom').textContent=ok?fmtNum(d.domains_blocked):'—';
+  $('v-st').textContent=ok?(d.blocking?MK.t('active'):MK.t('paused')):(d.error||MK.t('noConn'));
+  currentBlocking=!!d.blocking;
+  const b=$('btn-tgl');
+  b.disabled=!ok;
+  b.className='tgl '+(d.blocking?'':'paused');
+  b.textContent=d.blocking?MK.t('pause'):MK.t('resume');
+  $('msg').textContent=ok?'':(d.error||MK.t('noConn'));
+  size();
+}
+
+$('btn-tgl').onclick=async()=>{
+  const b=$('btn-tgl');b.disabled=true;
+  try{
+    const r=await mkFetch('api/widget/toggle',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enable:!currentBlocking})});
+    const res=await r.json();
+    if(res.ok)currentBlocking=res.blocking;
+    await tick();
+  }catch(e){$('msg').textContent=e.message}
+  finally{b.disabled=false}
+};
+
+async function tick(){
+  try{
+    const r=await mkFetch('api/widget',{cache:'no-store'});
+    const d=await r.json();
+    render(d);
+  }catch(e){render({ok:false,connected:false,error:e.message})}
+}
+MK.on(()=>tick());
+tick();
+setInterval(()=>{if(document.visibilityState==='visible')tick()},8000);
+</script>"""
+
+
+async def get_pihole_stats():
+    c = conf()
+    base, pw, ctx = target(c)
+    if not base:
+        return {"ok": False, "connected": False, "error": "Pi-hole yapılandırılmadı"}
+    sid = None
+    try:
+        sid = await pihole_login(c)
+    except Exception:
+        pass
+    headers = {"X-FTL-SID": sid} if sid else {}
+    # Pi-hole v6
+    try:
+        async with SESSION.get(f"{base}/api/stats/summary", headers=headers, ssl=ctx, timeout=aiohttp.ClientTimeout(total=3)) as r:
+            if r.status == 200:
+                d = await r.json(content_type=None)
+                q = d.get("queries", {})
+                grav = d.get("gravity", {})
+                blocking = True
+                try:
+                    async with SESSION.get(f"{base}/api/dns/blocking", headers=headers, ssl=ctx, timeout=aiohttp.ClientTimeout(total=2)) as br:
+                        if br.status == 200:
+                            bd = await br.json(content_type=None)
+                            blocking = bd.get("blocking") in (True, "enabled")
+                except Exception:
+                    pass
+                return {
+                    "ok": True, "connected": True, "version": 6, "blocking": blocking,
+                    "queries_total": q.get("total", 0),
+                    "queries_blocked": q.get("blocked", 0),
+                    "percent_blocked": round(float(q.get("percent_blocked", 0.0)), 1),
+                    "domains_blocked": grav.get("domains_being_blocked", 0)
+                }
+    except Exception:
+        pass
+    # Pi-hole v5
+    try:
+        url = f"{base}/admin/api.php?summaryRaw" + (f"&auth={pw}" if pw else "")
+        async with SESSION.get(url, ssl=ctx, timeout=aiohttp.ClientTimeout(total=3)) as r:
+            if r.status == 200:
+                d = await r.json(content_type=None)
+                return {
+                    "ok": True, "connected": True, "version": 5,
+                    "blocking": d.get("status") == "enabled",
+                    "queries_total": d.get("dns_queries_today", 0),
+                    "queries_blocked": d.get("ads_blocked_today", 0),
+                    "percent_blocked": round(float(d.get("ads_percentage_today", 0.0)), 1),
+                    "domains_blocked": d.get("domains_being_blocked", 0)
+                }
+    except Exception as e:
+        return {"ok": False, "connected": False, "error": str(e)}
+    return {"ok": False, "connected": False, "error": "Pi-hole yanıt vermedi"}
+
+
+async def toggle_pihole_blocking(enable=None):
+    c = conf()
+    base, pw, ctx = target(c)
+    if not base:
+        return {"ok": False, "error": "Pi-hole yapılandırılmadı"}
+    sid = None
+    try:
+        sid = await pihole_login(c)
+    except Exception:
+        pass
+    headers = {"X-FTL-SID": sid} if sid else {}
+    if enable is None:
+        stats = await get_pihole_stats()
+        enable = not stats.get("blocking", True)
+    # v6
+    try:
+        async with SESSION.post(f"{base}/api/dns/blocking", json={"blocking": enable}, headers=headers, ssl=ctx, timeout=aiohttp.ClientTimeout(total=3)) as r:
+            if r.status in (200, 204):
+                return {"ok": True, "blocking": enable}
+    except Exception:
+        pass
+    # v5
+    try:
+        action = "enable" if enable else "disable"
+        url = f"{base}/admin/api.php?{action}" + (f"&auth={pw}" if pw else "")
+        async with SESSION.get(url, ssl=ctx, timeout=aiohttp.ClientTimeout(total=3)) as r:
+            if r.status == 200:
+                return {"ok": True, "blocking": enable}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": False, "error": "İşlem uygulanamadı"}
+
+
+async def h_widget_page(_):
+    return web.Response(text=WIDGET, content_type="text/html", headers={"Cache-Control": "no-store"})
+
+
+async def h_widget_get(_):
+    data = await get_pihole_stats()
+    return j(data)
+
+
+async def h_widget_toggle(req):
+    b = await body(req) if req.can_read_body else {}
+    enable = b.get("enable")
+    res = await toggle_pihole_blocking(enable)
+    return j(res)
+
+
 # --- yaşam döngüsü ------------------------------------------------------------------
 
 LOCAL_TASK = None
@@ -571,6 +783,9 @@ async def main():
     r.add_get("/api/status", h_status)
     r.add_get("/api/ticket", h_ticket)
     r.add_post("/api/theme", h_theme)
+    r.add_get("/widget", h_widget_page)
+    r.add_get("/api/widget", h_widget_get)
+    r.add_post("/api/widget/toggle", h_widget_toggle)
     runner = web.AppRunner(app, access_log=None, shutdown_timeout=1)
     await runner.setup()
     if not await bind(runner, "127.0.0.1", PORT):

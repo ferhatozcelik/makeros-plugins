@@ -103,8 +103,8 @@ tick();setInterval(tick,30000);
 
 
 WIDGET = """<!doctype html><html lang=tr><meta charset=utf-8><meta name=viewport content='width=device-width'><style>
-html,body{margin:0;background:transparent;overflow:hidden}*{box-sizing:border-box}
-.c{position:relative;border-radius:16px;background:rgba(12,15,26,.86);border:1px solid rgba(200,245,60,.28);box-shadow:0 10px 30px rgba(0,0,0,.35);
+html,body{margin:0;padding:0;background:transparent;overflow:hidden}*{box-sizing:border-box}
+.c{position:relative;border-radius:18px;background:rgba(12,15,26,.86);border:1px solid rgba(200,245,60,.28);
  color:#e8ebf2;font:12px/1.4 ui-monospace,'JetBrains Mono','DejaVu Sans Mono',monospace;padding:14px 16px;cursor:pointer}
 .h{display:flex;align-items:center;gap:10px}.h b{font-size:13px}.h small{display:block;color:#8a93a6}
 .st{margin:12px 0 2px;font-size:26px;font-weight:800;letter-spacing:.04em;display:flex;align-items:center;gap:10px}.st i{width:11px;height:11px;border-radius:50%;background:currentColor;box-shadow:0 0 14px currentColor}

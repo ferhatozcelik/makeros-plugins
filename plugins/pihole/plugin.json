@@ -6,6 +6,11 @@
   "author": "MakerOS",
   "entrypoint": "main.py",
   "web_port": 8791,
+  "widget": {
+    "path": "/widget",
+    "w": 340,
+    "h": 180
+  },
   "icon": "icon.svg",
   "args": []
 }
