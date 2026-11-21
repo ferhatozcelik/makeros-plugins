@@ -29,6 +29,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import signal
 import ssl
 import sys
@@ -118,6 +119,107 @@ def ssl_ctx(c):
     ctx = ssl.create_default_context()
     ctx.check_hostname, ctx.verify_mode = False, ssl.CERT_NONE
     return ctx
+
+
+# --- yerleşik Home Assistant (bu cihazda, rootless Podman) ---------------------------
+# Kip "local": ghcr.io/home-assistant/home-assistant kapsayıcısı ana makine ağıyla çalışır (127.0.0.1:8123).
+# Hazır olunca ilk kurulumu eklenti yapar (tek kullanıcı: MakerOS); belirteç gerekmez. Eklenti durunca kapsayıcı da durur.
+LOCAL_URL = "http://127.0.0.1:8123"
+HA_IMAGE = "ghcr.io/home-assistant/home-assistant:stable"
+HA_NAME = "makeros-homeassistant"
+DATA = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share") / "makeros-plugins" / PLUGIN_ID
+LSTATE = {"state": "idle", "error": None, "log": []}
+LPROC = None
+STOPPING = asyncio.Event()
+
+
+def mode_of(c):
+    m_ = c.get("mode")
+    if m_ in ("local", "remote"):
+        return m_
+    return "remote" if c.get("url") and norm_url(c.get("url")) != LOCAL_URL else "local"
+
+
+def llog(line):
+    line = line.rstrip()
+    if line:
+        LSTATE["log"] = (LSTATE["log"] + [line[-300:]])[-40:]
+        print(line, flush=True)
+
+
+async def podman(*args):
+    p = await asyncio.create_subprocess_exec("podman", *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+    out, _ = await p.communicate()
+    return p.returncode, out.decode(errors="replace")
+
+
+async def run_local():
+    global LPROC
+    if not shutil.which("podman"):
+        LSTATE.update(state="error", error="Podman yok: yerleşik Home Assistant çalıştırılamaz (Ayarlar'dan uzak kipe geçin).")
+        return
+    (DATA / "config").mkdir(parents=True, exist_ok=True)
+    while not STOPPING.is_set() and mode_of(load_conf()) == "local":
+        code, _ = await podman("image", "exists", HA_IMAGE)
+        if code != 0:
+            LSTATE.update(state="pulling", error=None)
+            llog("Home Assistant imajı indiriliyor (~600 MB, birkaç dakika)…")
+            code, out = await podman("pull", "-q", HA_IMAGE)
+            if code != 0:
+                LSTATE.update(state="error", error="İmaj indirilemedi: " + out.strip()[-300:])
+                await asyncio.sleep(30)
+                continue
+        LSTATE.update(state="starting", error=None)
+        LPROC = await asyncio.create_subprocess_exec(
+            "podman", "run", "--rm", "--replace", "--name", HA_NAME, "--network", "host",
+            "-e", f"TZ={os.environ.get('TZ') or 'Europe/Istanbul'}", "-v", f"{DATA / 'config'}:/config", HA_IMAGE,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+        async for raw in LPROC.stdout:
+            llog(raw.decode(errors="replace"))
+        await LPROC.wait()
+        if STOPPING.is_set() or mode_of(load_conf()) != "local":
+            return
+        LSTATE.update(state="error", error="Home Assistant kapsayıcısı durdu; yeniden başlatılıyor.")
+        await asyncio.sleep(15)
+
+
+async def watch_local():
+    """HA yanıt verince: ilk kurulumu MakerOS ile yap (gerekirse), durum 'running'."""
+    while not STOPPING.is_set():
+        c = load_conf()
+        if mode_of(c) == "local" and LSTATE["state"] in ("starting", "onboarding"):
+            try:
+                async with SESSION.get(LOCAL_URL + "/api/onboarding", timeout=aiohttp.ClientTimeout(total=4)) as r:
+                    up = r.status < 500
+            except (aiohttp.ClientError, asyncio.TimeoutError):
+                up = False
+            if up:
+                c["url"] = LOCAL_URL
+                save_conf(c)
+                try:
+                    if await onboarding_pending(c):
+                        LSTATE["state"] = "onboarding"
+                        await onboard_as_makeros(load_conf())
+                    if load_conf().get("token"):
+                        LSTATE.update(state="running", error=None)
+                except HAError as e:
+                    LSTATE["error"] = str(e)
+        await asyncio.sleep(3)
+
+
+LOCAL_TASK = None
+
+
+def start_local():
+    global LOCAL_TASK
+    if LOCAL_TASK is None or LOCAL_TASK.done():
+        LOCAL_TASK = asyncio.get_running_loop().create_task(run_local())
+
+
+async def stop_local():
+    if LPROC is not None and LPROC.returncode is None:
+        await podman("stop", "-t", "15", HA_NAME)
+    LSTATE.update(state="idle")
 
 
 # --- REST istemcisi (widget ve sağlık denetimi) ----------------------------------
@@ -606,14 +708,18 @@ h2{margin:0 0 4px;font-size:17px}h3{margin:18px 0 8px;font-size:13px}input.f{fle
 #msg{margin-top:10px}.center{position:fixed;inset:0;display:grid;place-items:center;text-align:center;padding:24px}
 </style>
 <iframe id=ha class=hide allow="fullscreen; clipboard-read; clipboard-write; microphone" referrerpolicy=no-referrer></iframe>
-<div id=wait class="center sub" data-t=loading></div>
+<div id=wait class="center"><div><div id=wt class=sub data-t=loading></div><pre id=wlog class=hide style="max-width:min(720px,90vw);max-height:160px;overflow:auto;background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:8px;font-size:11px;white-space:pre-wrap;text-align:left"></pre></div></div>
 <button id=gear data-t-title=settings>""" + GEAR + r"""</button>
 <div id=panel class=hide><div class=box>
  <h2>Home Assistant</h2><div class=sub data-t=intro></div>
- <h3 data-t=conn></h3>
+ <h3 data-t=modeT></h3>
+ <div class=row><label><input type=radio name=mode value=local> <span data-t=local></span></label></div>
+ <div class=row style="margin-top:6px"><label><input type=radio name=mode value=remote> <span data-t=remote></span></label></div>
+ <div id=rem class=hide style="margin-top:8px">
  <div class=row><input class=f id=url data-t-placeholder=urlPh></div>
  <div class=row style="margin-top:8px"><input class=f id=tok type=password></div>
  <div class=row style="margin-top:8px"><label><input type=checkbox id=ins> <span data-t=insecure></span></label></div>
+ </div>
  <div class=row style="margin-top:8px"><label><input type=checkbox id=auto> <span data-t=autoLogin></span></label></div>
  <div class=sub style="margin-top:6px" data-t-html=help></div>
  <div id=add class=hide><h3 data-t=addTo></h3><div class=row>
@@ -636,6 +742,9 @@ MK.i18n({
   addTo:"Home Assistant'a ekle",integration:'Entegrasyon ekle',devices:'Cihazlar',automations:'Otomasyonlar',addonStore:'Eklenti mağazası',users:'Kullanıcılar',
   asUser:"Home Assistant'ta {u} kullanıcısı olarak",ownLogin:'Home Assistant girişinizle',noStore:'eklenti mağazası yalnız Home Assistant OS/Supervised kurulumlarda vardır',
   widget:"Masaüstü widget'ı",widgetHelp:"Seçtikleriniz widget'ta kısayol olarak görünür (en çok 12). Widget'ı Eklentiler → Home Assistant → <b>Masaüstüne ekle</b> ile açın.",
+  modeT:'Çalışma kipi',local:'Bu cihazda çalıştır (önerilen)',remote:"Ağdaki başka bir Home Assistant'a bağlan",
+  pulling:'Home Assistant indiriliyor (ilk açılış, ~600 MB, birkaç dakika)…',starting:'Home Assistant başlatılıyor (ilk açılış birkaç dakika sürebilir)…',onboarding:'Home Assistant MakerOS hesabıyla kuruluyor…',
+  error:'Home Assistant çalışmıyor',idle:'Bekleniyor…',
   search:'Ara',close:'Kapat',save:'Kaydet',https:'MakerOS HTTPS ile açıldı; Home Assistant arayüzü (HTTP) bu sayfaya gömülemez. Yeni sekmede açın:'},
  en:{loading:'Loading Home Assistant…',settings:'Settings',intro:'Connection, MakerOS user and desktop widget.',conn:'Connection',
   urlPh:'Address (e.g. http://homeassistant.local:8123)',tokPh:'Long-lived access token',tokKept:'Token saved (paste to change)',
@@ -644,6 +753,9 @@ MK.i18n({
   addTo:'Add to Home Assistant',integration:'Add integration',devices:'Devices',automations:'Automations',addonStore:'Add-on store',users:'Users',
   asUser:'Signed in to Home Assistant as {u}',ownLogin:'With your Home Assistant login',noStore:'the add-on store exists only on Home Assistant OS/Supervised',
   widget:'Desktop widget',widgetHelp:'Selected entities appear as shortcuts in the widget (up to 12). Turn the widget on in Plugins → Home Assistant → <b>Add to desktop</b>.',
+  modeT:'Mode',local:'Run on this device (recommended)',remote:'Connect to another Home Assistant on the network',
+  pulling:'Downloading Home Assistant (first start, ~600 MB, a few minutes)…',starting:'Starting Home Assistant (first start can take a few minutes)…',onboarding:'Setting up Home Assistant with the MakerOS account…',
+  error:'Home Assistant is not running',idle:'Waiting…',
   search:'Search',close:'Close',save:'Save',https:'MakerOS was opened over HTTPS; the Home Assistant UI (HTTP) cannot be embedded. Open it in a new tab:'}});
 // data-t-html (yalnız bu sayfanın kendi sabit metinleri)
 function trHtml(){for(const n of document.querySelectorAll('[data-t-html]'))n.innerHTML=MK.t(n.dataset.tHtml)}trHtml();
@@ -669,17 +781,25 @@ function drawEnts(){const q=$('q').value.toLowerCase();$('ents').innerHTML='';
   c.onchange=()=>{c.checked?SEL.add(e.id):SEL.delete(e.id);if(SEL.size>12){SEL.delete(e.id);c.checked=false}};l.title=e.id;l.append(c,e.name);$('ents').append(l)}}
 function drawWho(i){$('who').textContent=(i.auto_login&&i.user?MK.t('asUser',{u:i.user}):MK.t('ownLogin'))+` · Home Assistant ${i.version}`+(i.supervisor?'':' · '+MK.t('noStore'))}
 let INFO=null;
-async function panel(show){$('panel').classList.toggle('hide',!show);if(!show)return;$('url').value=CFG.url||'';$('ins').checked=!!CFG.insecure;$('auto').checked=CFG.auto_login!==false;
+async function panel(show){$('panel').classList.toggle('hide',!show);if(!show)return;document.querySelectorAll('[name=mode]').forEach(r=>r.checked=r.value===CFG.mode);
+ $('rem').classList.toggle('hide',CFG.mode!=='remote');$('url').value=CFG.mode==='remote'?(CFG.url||''):'';$('ins').checked=!!CFG.insecure;$('auto').checked=CFG.auto_login!==false;
  $('tok').placeholder=MK.t(CFG.has_token?'tokKept':'tokPh');$('msg').textContent='';
  if(CFG.url&&CFG.has_token)api('api/info').then(i=>{INFO=i;$('add').classList.remove('hide');$('store').classList.toggle('hide',!i.supervisor);drawWho(i)}).catch(()=>{});
  if(CFG.url&&CFG.has_token){try{const [s,w]=await Promise.all([api('api/states'),api('api/widget')]);ALL=s.entities;SEL=new Set(w.entities);$('wsec').classList.remove('hide');drawEnts()}catch(e){$('msg').textContent=e.message}}}
 $('gear').onclick=()=>panel(true);document.querySelectorAll('[data-go]').forEach(b=>b.onclick=()=>go(b.dataset.go));$('close').onclick=()=>panel(false);$('q').oninput=drawEnts;
-$('save').onclick=async()=>{$('save').disabled=true;$('msg').textContent='';try{const b={url:$('url').value,insecure:$('ins').checked,auto_login:$('auto').checked};if($('tok').value)b.token=$('tok').value.trim();
+document.querySelectorAll('[name=mode]').forEach(r=>r.onchange=()=>$('rem').classList.toggle('hide',!(r.value==='remote'&&r.checked)));
+$('save').onclick=async()=>{$('save').disabled=true;$('msg').textContent='';try{const mode=document.querySelector('[name=mode]:checked')?.value||'local';const b={mode,url:$('url').value,insecure:$('ins').checked,auto_login:$('auto').checked};if($('tok').value)b.token=$('tok').value.trim();
  await api('api/config',b);$('tok').value='';if(!$('wsec').classList.contains('hide'))await api('api/widget',{entities:[...SEL]});
- const first=!CFG.url;CFG=await api('api/config');panel(false);if(first||!$('ha').src)openHA();else $('ha').src=await haSrc()}catch(e){$('msg').textContent=e.message}finally{$('save').disabled=false}};
+ CFG=await api('api/config');panel(false);OPENED=false;$('ha').removeAttribute('src')}catch(e){$('msg').textContent=e.message}finally{$('save').disabled=false}};
 MK.on((_,ch)=>{trHtml();$('tok').placeholder=MK.t(CFG.has_token?'tokKept':'tokPh');if(INFO)drawWho(INFO);pushTheme()});
-(async()=>{CFG=await api('api/config');await pushTheme();
- if(!CFG.url||!CFG.has_token){$('wait').classList.add('hide');panel(true)}else openHA()})();
+// Yerleşik kip: HA hazır olana dek ilerleme; hazır olunca arayüz açılır.
+let OPENED=false;
+async function poll(){let st={};try{st=await api('api/status')}catch(e){st={state:'error',error:e.message}}
+ if(CFG.mode==='local'&&st.state!=='running'){$('wait').classList.remove('hide');$('ha').classList.add('hide');OPENED=false;
+  $('wt').textContent=MK.t(st.state||'idle')+(st.error?' — '+st.error:'');const lg=$('wlog');lg.textContent=(st.log||[]).slice(-12).join('\n');lg.classList.toggle('hide',!(st.log||[]).length)}
+ else if(!OPENED){CFG=await api('api/config');if(CFG.mode==='remote'&&(!CFG.url||!CFG.has_token)){$('wait').classList.add('hide');panel(true)}else{OPENED=true;openHA()}}
+ setTimeout(poll,OPENED?15000:3000)}
+(async()=>{CFG=await api('api/config');await pushTheme();poll()})();
 </script>"""
 
 WIDGET = r"""<!doctype html><html lang=tr><meta charset=utf-8><meta name=viewport content='width=device-width'>""" + KIT_HEAD + r"""<style>
@@ -764,15 +884,42 @@ async def h_health(_):
     return j(out)
 
 
+async def h_status(_):
+    c = load_conf()
+    if mode_of(c) != "local":
+        return j({"ok": True, "mode": "remote", "state": "running"})
+    return j({"ok": True, "mode": "local", **LSTATE})
+
+
 async def h_config_get(_):
     c = load_conf()
-    return j({"url": c.get("url", ""), "has_token": bool(c.get("token")), "insecure": bool(c.get("insecure")), "proxy_port": proxy_port(c),
+    return j({"mode": mode_of(c), "url": c.get("url", ""), "has_token": bool(c.get("token")), "insecure": bool(c.get("insecure")), "proxy_port": proxy_port(c),
               "auto_login": c.get("auto_login", True)})
 
 
 async def h_config_post(req):
     b = await body(req)
     c = load_conf()
+    mode = b.get("mode", mode_of(c))
+    if mode not in ("local", "remote"):
+        raise ValueError("mode local|remote")
+    old = mode_of(c)
+    if mode == "local":
+        if isinstance(b.get("auto_login"), bool):
+            c["auto_login"] = b["auto_login"]
+        if old != "local":
+            c.pop("mk_user", None)
+            c.pop("mk_sessions", None)
+            c.pop("token", None)
+            c["url"] = LOCAL_URL
+        c["mode"] = "local"
+        save_conf(c)
+        start_local()
+        return j({"ok": True, "mode": "local"})
+    c["mode"] = "remote"
+    if old == "local":
+        await stop_local()
+        c.pop("token", None)
     url = norm_url(b.get("url"))
     if not url.startswith(("http://", "https://")) or len(url) > 300:
         return j({"ok": False, "error": m("Adres http:// veya https:// ile başlamalı.", "Address must start with http:// or https://.")}, 400)
@@ -921,6 +1068,7 @@ async def main():
     r.add_post("/api/theme", h_theme)
     r.add_get("/api/ticket", h_ticket)
     r.add_get("/api/info", h_info)
+    r.add_get("/api/status", h_status)
     runner = web.AppRunner(app, access_log=None, shutdown_timeout=1)
     await runner.setup()
     try:
@@ -940,11 +1088,15 @@ async def main():
         return
     print("Home Assistant eklentisi; port", PORT, flush=True)
     await restart_proxy()
-    stop = asyncio.Event()
+    if mode_of(load_conf()) == "local":
+        start_local()
     loop = asyncio.get_running_loop()
+    watcher = loop.create_task(watch_local())
     for s in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(s, stop.set)
-    await stop.wait()
+        loop.add_signal_handler(s, STOPPING.set)
+    await STOPPING.wait()
+    watcher.cancel()
+    await stop_local()
     for w in list(OPEN_WS):  # tarayıcı yeniden bağlanır (yeni kopyaya)
         await w.close()
     if PROXY_STATE["runner"]:
