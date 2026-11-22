@@ -167,6 +167,9 @@ async def run_local():
             args = ["run", "--rm", "--replace", "--name", CNAME, "-p", f"127.0.0.1:{LOCAL_WEB}:80/tcp",
                     "-e", f"TZ={os.environ.get('TZ') or 'Europe/Istanbul'}", "-e", f"FTLCONF_webserver_api_password={c['local_password']}",
                     "-e", "FTLCONF_dns_listeningMode=ALL", "-e", "FTLCONF_dns_upstreams=1.1.1.1;9.9.9.9",
+                    # Yalnız HTTP (80): v6 varsayılanı 443'ü de açar; kapsayıcıda tls.pem hazırlanamayınca
+                    # "Error initializing SSL context" ile web sunucusu hiç başlamıyordu. Panel MakerOS vekilinden açılır.
+                    "-e", "FTLCONF_webserver_port=80",
                     "-v", f"{DATA / 'etc-pihole'}:/etc/pihole", "--cap-add", "NET_ADMIN", "--cap-add", "SYS_NICE"]
             if with_dns and ip:
                 args += ["-p", f"{ip}:53:53/tcp", "-p", f"{ip}:53:53/udp"]

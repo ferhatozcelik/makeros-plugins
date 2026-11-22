@@ -1,7 +1,7 @@
 {
   "id": "pihole",
   "name": "Pi-hole",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "description": "Ağ genelinde reklam engelleyici: Pi-hole bu cihazda çalışır (ya da ağdaki bir Pi-hole'a bağlanır); arayüz Pi-hole'un kendi paneli, MakerOS temasıyla ve otomatik girişle.",
   "author": "MakerOS",
   "entrypoint": "main.py",
