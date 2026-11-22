@@ -200,6 +200,9 @@ async def watch_local():
                     if await onboarding_pending(c):
                         LSTATE["state"] = "onboarding"
                         await onboard_as_makeros(load_conf())
+                    cc = load_conf()
+                    if cc.get("token") and cc.get("core_configured") != (cc.get("lang") or "tr"):
+                        await configure_core()
                     if load_conf().get("token"):
                         LSTATE.update(state="running", error=None)
                 except HAError as e:
@@ -553,6 +556,30 @@ async def onboard_as_makeros(c):
     c.update(token=llt, mk_user={"id": me["id"], "username": "makeros", "password": pw, "owner": True}, mk_sessions={})
     save_conf(c)
     print("Home Assistant ilk kurulumu MakerOS hesabıyla yapıldı.", flush=True)
+
+
+async def configure_core(lang=None):
+    """Yerleşik HA'nın sistem ayarları: konum/ülke/saat dilimi HA'nın kendi algılamasıyla (config/core/detect), dil MakerOS'un
+    dili, metrik birimler. Konum yoksa harita boş (0,0) açılıyor, sunucu dili "en" iken panel adları İngilizce kalıyordu."""
+    c = load_conf()
+    lang = lang or c.get("lang") or "tr"
+    async with HAWS(c) as ws:
+        try:
+            det = await ws.cmd({"type": "config/core/detect"}) or {}
+        except (HAError, asyncio.TimeoutError):
+            det = {}
+        upd = {"language": lang, "unit_system": "metric",
+               "time_zone": det.get("time_zone") or os.environ.get("TZ") or "Europe/Istanbul",
+               "country": det.get("country") or "TR", "currency": det.get("currency") or "TRY"}
+        if det.get("latitude") is not None and det.get("longitude") is not None:
+            upd.update(latitude=det["latitude"], longitude=det["longitude"])
+        elif c.get("core_configured") is None:
+            upd.update(latitude=39.0, longitude=35.0)  # Türkiye ortası; algılanamazsa harita en azından ülkede açılır
+        await ws.cmd({"type": "config/core/update", **upd})
+    c = load_conf()
+    c["core_configured"] = lang
+    save_conf(c)
+    print(f"Home Assistant sistem ayarları: dil {lang}, {upd.get('country')}, {upd.get('time_zone')}", flush=True)
 
 
 def login_script(t):
@@ -1012,6 +1039,12 @@ async def h_theme(req):
             await set_ha_language(c["lang"])
         except HAError as e:
             print("Home Assistant dili:", e, flush=True)
+    # Yerleşik HA: sunucu dili de (panel adları, bildirimler) MakerOS'u izler.
+    if mode_of(c) == "local" and c.get("token") and c.get("core_configured") not in (None, c.get("lang")):
+        try:
+            await configure_core(c.get("lang"))
+        except HAError as e:
+            print("Home Assistant sistem dili:", e, flush=True)
     return j({"ok": True, "css": theme_text(c), "lang": c.get("lang", "tr")})
 
 
